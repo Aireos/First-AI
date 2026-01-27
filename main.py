@@ -9,6 +9,7 @@ charecter that can move left, right, or up
 some basic parkour maps that need to have a spawn, death, and finish
 easy inputs and exputs
 """
+
 """
 The checker needs to be able to:
 see the distance from the goal/flag the charecter is
