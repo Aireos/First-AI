@@ -1,174 +1,203 @@
-#AKA learning Q-Learning
-import random
-import numpy as np
 import pygame
 import sys
-"""
-The enviorment needs to have the following:
-2d simulation engine
-charecter that can move left, right, or up
-some basic parkour maps that need to have a spawn, block, death, and finish
-easy inputs and exputs
-"""
-"""
-The checker needs to be able to:
-see the distance from the goal/flag the charecter is
-check what the distance was last time
-based on those two things make a reward that is positive or negitive for the model.
-"""
-"""
-the model needs to be able to:
-make inputs for the enviorment
-take in the outputs of the enviorment
-use the checker reward to affect learning
-use the following main points:
-aplha = learning rate = # between 0-1 that determines to what extent new info (rewards) effect old/current info.
-in a deterministice enviorment, 1 is best, but usally use 0.9 for the most part
-gamma = discount factor = # between 0-1 about how important future rewards are compared to current
-1 means future is same imporantancy as current
-0 means current is more imporant then future
-epsilon = randomness/exploration rate = # between 0-1
-1 = completly random
-0 = completley strict to Q-table
-should start at one, and as Q-table grows, slowley get more relient on Q-table
-eplsilon_decay = # between 0-1, is multiplied by the epsilon to get more relient on the Q-table. 
-good number for this is 0.9995
-min_eplislon = # between 0-1, is the minumum epislon, so that there always is at least a little bit of randomness for the model
-number used in tutorial for this is 0.01
-num_episodes = # from 1-infinity, is the number of trials that the program runs
-number used in tutorial  for this is 10,000
-max_steps = # from 1-infinity, is the max number of actions that the model can do in any given trial
-number used in tutorial for this is 100
-Q-table = nump array initialized full of 0's = all possible states in the given enviorment
-calculated by all factors combined, for the example given from the tutorial:
-5x5 grid = 25 posisitions * 5 possible person spaces * 4 possible hotel spaces = 500 possible states
-each of these states can have 4 actions (techinicly the edges have less, but oh well) (actually, they would have an action, it just wouldn't do anything)
-here is gemeni's explanation for it: 
-The Q-table is a matrix where rows represent all possible states and columns represent all possible actions
-needs more expaining.
-"""
-"""
-the runner needs to be able to open a pygame window and show relevenent info and controls while showing the current running program such as:
-current episode / total episodes
-be able to view multiple episode saved history running at once
-stop current episode
-continue current episode
-save current ai
-current fitness / eplisolon
-exit
-"""
+import math
 
-#example program made by gemini:
+# ======================
+# Deterministic PRNG
+# ======================
 
-import pygame
-import numpy as np
-import random
-import sys
+class PRNG:
+    def __init__(self, seed=1234):
+        self.state = seed
 
-# --- CONFIGURATION ---
-WIDTH, HEIGHT = 600, 400
-GRID_SIZE = 40
-COLS, ROWS = WIDTH // GRID_SIZE, HEIGHT // GRID_SIZE
-ALPHA, GAMMA = 0.9, 0.95
-EPSILON, EPS_DECAY, MIN_EPS = 1.0, 0.9995, 0.01
-NUM_EPISODES, MAX_STEPS = 10000, 100
+    def next(self):
+        self.state = (1664525 * self.state + 1013904223) % (2**32)
+        return self.state
 
-# Map: 0=Empty, 1=Wall, 2=Spawn, 3=Finish, 4=Death
-MAP = [
-    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
-    [1,2,0,0,0,1,0,0,0,0,0,0,0,3,1],
-    [1,0,0,4,0,1,0,1,1,1,0,4,0,0,1],
-    [1,0,1,1,0,0,0,0,0,1,0,1,1,0,1],
-    [1,0,0,0,0,4,1,1,0,0,0,0,0,0,1],
-    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
-]
+    def random(self):
+        return self.next() / (2**32)
 
-class Environment:
-    def __init__(self):
+
+# ======================
+# Environment
+# ======================
+
+class ParkourEnv:
+    def __init__(self, difficulty):
+        self.difficulty = difficulty
         self.reset()
 
     def reset(self):
-        for r in range(len(MAP)):
-            for c in range(len(MAP[0])):
-                if MAP[r][c] == 2: self.pos = [r, c]
-                if MAP[r][c] == 3: self.goal = [r, c]
-        self.last_dist = self.get_dist()
+        self.player_x = 100
+        self.player_y = 300
+        self.vel_y = 0
+        self.on_ground = True
+        self.done = False
+
+        self.speed = 2 + self.difficulty
+        self.obstacles = []
+
+        count = 1 if self.difficulty < 3 else 2
+
+        for i in range(count):
+            self.obstacles.append(600 + i * 300)
+
         return self.get_state()
 
-    def get_dist(self):
-        return np.sqrt((self.pos[0]-self.goal[0])**2 + (self.pos[1]-self.goal[1])**2)
-
     def get_state(self):
-        return self.pos[0] * len(MAP[0]) + self.pos[1]
+        nearest = min(self.obstacles)
+        distance = nearest - self.player_x
+        bucket = max(0, min(15, distance // 40))
+        return (bucket, int(self.on_ground))
 
     def step(self, action):
-        # 0:Up, 1:Down, 2:Left, 3:Right
-        move = {0:[-1,0], 1:[1,0], 2:[0,-1], 3:[0,1]}[action]
-        new_pos = [self.pos[0]+move[0], self.pos[1]+move[1]]
-        
-        cell = MAP[new_pos[0]][new_pos[1]]
-        reward, done = -1, False # Default step penalty
+        reward = 0
 
-        if cell != 1: # Move if not wall
-            self.pos = new_pos
-        
-        curr_dist = self.get_dist()
-        reward += (self.last_dist - curr_dist) * 2 # Reward for getting closer
-        self.last_dist = curr_dist
+        # ACTIONS:
+        # 0 = do nothing
+        # 1 = move forward
+        # 2 = jump
 
-        if cell == 3: reward, done = 100, True  # Goal
-        elif cell == 4: reward, done = -100, True # Death
-        
-        return self.get_state(), reward, done
+        if action == 1:
+            self.player_x += 5
 
-class QModel:
-    def __init__(self, states, actions):
-        self.q_table = np.zeros((states, actions)) #
-        self.eps = EPSILON
+        if action == 2 and self.on_ground:
+            self.vel_y = -12
+            self.on_ground = False
+
+        # Gravity
+        self.vel_y += 0.6
+        self.player_y += self.vel_y
+
+        if self.player_y >= 300:
+            self.player_y = 300
+            self.vel_y = 0
+            self.on_ground = True
+
+        # Move obstacles toward player
+        for i in range(len(self.obstacles)):
+            self.obstacles[i] -= self.speed
+
+        # Check collisions
+        for obs in self.obstacles:
+            if abs(self.player_x - obs) < 25 and self.player_y > 270:
+                reward = -100
+                self.done = True
+
+        # Win if all obstacles passed
+        if all(obs < 0 for obs in self.obstacles):
+            reward = 200
+            self.done = True
+
+        reward += 1  # small survival reward
+
+        return self.get_state(), reward, self.done
+
+
+# ======================
+# Agent
+# ======================
+
+class Agent:
+    def __init__(self):
+        self.q = {}
+        self.alpha = 0.1
+        self.gamma = 0.95
+        self.epsilon = 1.0
+        self.min_epsilon = 0.05
+        self.decay = 0.995
+        self.rng = PRNG(999)
+
+    def get_q(self, state, action):
+        return self.q.get((state, action), 0.0)
 
     def choose_action(self, state):
-        if random.uniform(0, 1) < self.eps:
-            return random.randint(0, 3) # Explore
-        return np.argmax(self.q_table[state]) # Exploit
+        if self.rng.random() < self.epsilon:
+            return int(self.rng.random() * 3)
+        else:
+            qvals = [self.get_q(state, a) for a in range(3)]
+            return qvals.index(max(qvals))
 
-    def learn(self, s, a, r, s_next):
-        old_val = self.q_table[s, a]
-        next_max = np.max(self.q_table[s_next])
-        # Q-Learning Formula
-        self.q_table[s, a] = (1 - ALPHA) * old_val + ALPHA * (r + GAMMA * next_max)
-        self.eps = max(MIN_EPS, self.eps * EPS_DECAY)
+    def update(self, state, action, reward, next_state):
+        best_next = max(self.get_q(next_state, a) for a in range(3))
+        current = self.get_q(state, action)
+        self.q[(state, action)] = current + self.alpha * (
+            reward + self.gamma * best_next - current
+        )
 
-# --- RUNNER ---
+    def decay_epsilon(self):
+        self.epsilon = max(self.min_epsilon,
+                           self.epsilon * self.decay)
+
+
+# ======================
+# Main Loop
+# ======================
+
 pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT + 50))
+screen = pygame.display.set_mode((900, 400))
 clock = pygame.time.Clock()
-env = Environment()
-model = QModel(len(MAP) * len(MAP[0]), 4)
+font = pygame.font.SysFont(None, 24)
 
-for ep in range(NUM_EPISODES):
+agent = Agent()
+
+difficulty = 1
+episodes = 0
+success_counter = 0
+
+while True:
+    env = ParkourEnv(difficulty)
     state = env.reset()
-    for _ in range(MAX_STEPS):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+    done = False
 
-        action = model.choose_action(state)
+    while not done:
+        clock.tick(60)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+
+        action = agent.choose_action(state)
         next_state, reward, done = env.step(action)
-        model.learn(state, action, reward, next_state)
+        agent.update(state, action, reward, next_state)
         state = next_state
 
-        # Rendering
-        screen.fill((30, 30, 30))
-        for r in range(len(MAP)):
-            for c in range(len(MAP[0])):
-                color = {0:(50,50,50), 1:(100,100,100), 2:(0,255,0), 3:(255,215,0), 4:(255,0,0)}[MAP[r][c]]
-                pygame.draw.rect(screen, color, (c*GRID_SIZE, r*GRID_SIZE, GRID_SIZE-2, GRID_SIZE-2))
-        
-        pygame.draw.circle(screen, (0,150,255), (env.pos[1]*GRID_SIZE+20, env.pos[0]*GRID_SIZE+20), 15)
-        
-        # Stats UI
-        font = pygame.font.SysFont('Arial', 18)
-        txt = font.render(f"Ep: {ep}/{NUM_EPISODES} | Eps: {model.eps:.4f} | Fitness: {reward}", True, (255,255,255))
-        screen.blit(txt, (10, HEIGHT + 10))
-        
+        # DRAW
+        screen.fill((20, 20, 30))
+
+        pygame.draw.rect(screen, (60, 60, 60), (0, 330, 900, 70))
+
+        for obs in env.obstacles:
+            pygame.draw.rect(screen, (200, 50, 50),
+                             (obs, 280, 30, 50))
+
+        pygame.draw.rect(screen, (50, 200, 50),
+                         (env.player_x, env.player_y, 25, 25))
+
+        text = font.render(
+            f"Episode: {episodes}  Level: {difficulty}  Epsilon: {round(agent.epsilon,2)}",
+            True, (255, 255, 255)
+        )
+        screen.blit(text, (10, 10))
+
         pygame.display.flip()
-        if done: break
+
+    # Curriculum logic
+    if reward > 0:
+        success_counter += 1
+    else:
+        success_counter = 0
+
+    if success_counter >= 5:
+        difficulty += 1
+        success_counter = 0
+        print("Level Up! Now difficulty:", difficulty)
+
+    agent.decay_epsilon()
+    episodes += 1
+
+    if episodes % 50 == 0:
+        print("Episode:", episodes,
+              "Difficulty:", difficulty,
+              "Epsilon:", round(agent.epsilon, 2))
